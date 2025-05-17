@@ -323,7 +323,7 @@ class TextEncoder(nn.Module):
         return output
 
 
-class COCOSubsetDataset(Dataset):
+class SubsetDataset(Dataset):
     def __init__(self, root_folder, img_size=64, transform=None):
         self.root_folder = root_folder
         self.images_folder = os.path.join(root_folder, "images")
@@ -410,7 +410,7 @@ class SimpleTokenizer:
         
         return input_ids.unsqueeze(0), attention_mask.unsqueeze(0)  # Add batch dimension
 
-def train_on_coco_subset(
+def train(
     root_folder="./coco_subset",
     num_epochs=50,
     batch_size=16,
@@ -419,36 +419,30 @@ def train_on_coco_subset(
     timesteps=1000,
     device="cuda" if torch.cuda.is_available() else "cpu"
 ):
-    # Initialize dataset and dataloader
-    dataset = COCOSubsetDataset(root_folder, img_size=img_size)
+    dataset = SubsetDataset(root_folder, img_size=img_size)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     
     unet = SimpleUNet(in_channels=4, out_channels=4, time_dim=256, text_dim=768).to(device)
     text_encoder = TextEncoder().to(device)
     diffusion = DiffusionModel(unet, timesteps=timesteps)
     
-    # Initialize optimizer
     optimizer = torch.optim.AdamW(unet.parameters(), lr=learning_rate)
     
-    # Initialize tokenizer
     tokenizer = SimpleTokenizer()
     
-    # Create output directory for results
     output_dir = os.path.join(root_folder, "training_results")
     os.makedirs(output_dir, exist_ok=True)
     
-    # Training loop
     for epoch in range(num_epochs):
         print(f"Starting epoch {epoch+1}/{num_epochs}")
         epoch_loss = 0.0
         
         for batch in tqdm(dataloader, desc=f"Epoch {epoch+1}"):
             images = batch['image'].to(device).float()  # [B, 3, H, W]
-            captions = batch['caption']  # List of strings
+            captions = batch['caption']  
             
             latents = torch.cat([images, torch.zeros_like(images[:, :1], dtype=torch.float32)], dim=1)  # [B, 4, H, W]
             
-            # Tokenize captions
             all_input_ids = []
             all_attention_masks = []
             
@@ -460,20 +454,16 @@ def train_on_coco_subset(
             input_ids = torch.cat(all_input_ids, dim=0)
             attention_masks = torch.cat(all_attention_masks, dim=0)
             
-            # Encode text with the text encoder
             with torch.no_grad():  # Freeze text encoder during training
                 text_embeddings = text_encoder(input_ids, attention_masks)
             
-            # Train diffusion model
             loss = diffusion.train_step(latents, text_embeddings, optimizer)
             epoch_loss += loss
             print(f"Epoch {epoch}, Loss: {loss}")
             
-        # Print epoch statistics
         avg_loss = epoch_loss / len(dataloader)
         print(f"Epoch {epoch+1}/{num_epochs}, Average Loss: {avg_loss:.4f}")
         
-        # Save checkpoint
         if (epoch + 1) % 1 == 0 or epoch == num_epochs - 1:
             checkpoint_path = os.path.join(output_dir, f"diffusion_checkpoint_epoch_{epoch+1}.pt")
             torch.save({
@@ -484,7 +474,6 @@ def train_on_coco_subset(
             }, checkpoint_path)
             print(f"Saved checkpoint to {checkpoint_path}")
             
-            # Generate a sample image
             with torch.no_grad():
                 sample_text = "a photograph of plastic bucket"
                 sample_ids, sample_mask = tokenizer.encode(sample_text, device)
@@ -493,12 +482,10 @@ def train_on_coco_subset(
                 shape = (1, 4, img_size, img_size)
                 sample = diffusion.p_sample_loop(shape, sample_embedding, device)
                 
-                # Convert to image (assuming the first 3 channels are RGB)
                 sample_image = sample[0, :3].permute(1, 2, 0).cpu().numpy()
-                sample_image = (sample_image + 1) / 2.0  # Scale from [-1, 1] to [0, 1]
+                sample_image = (sample_image + 1) / 2.0 
                 sample_image = np.clip(sample_image, 0, 1)
                 
-                # Save sample image
                 sample_path = os.path.join(output_dir, f"sample_epoch_{epoch+1}.png")
                 sample_pil = Image.fromarray((sample_image * 255).astype(np.uint8))
                 sample_pil.save(sample_path)
@@ -507,5 +494,4 @@ def train_on_coco_subset(
     print("Training completed!")
     return unet, text_encoder, diffusion
 
-
-train_on_coco_subset()
+train()
